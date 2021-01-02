@@ -1,91 +1,101 @@
-import java.text.ParseException;
 import java.util.*;
 
 public class Args {
 	private String schema;
-	private String[] args;
 	private boolean valid = true;
-	private Set<Character> unexpectedArguments = new TreeSet<>();
-	private Map<Character, Boolean> booleanArgs = new HashMap<>();
-	private int numberOfArguments = 0;
+	private Map<Character, ArgumentMarshaler> marshalers = new HashMap<>();
+	private Set<Character> argsFound = new HashSet<>();
+	private Iterator<String> currentArgument;
+	private List<String> argsList;
 
-	public Args(String schema, String[] args) throws ParseException {
+	public Args(String schema, String[] args) throws ArgsException {
 		this.schema = schema;
-		this.args = args;
-		valid = parse();
+		argsList = Arrays.asList(args);
+		parse();
 	}
 
-	public boolean isValid() {
-		return valid;
-	}
-
-	private boolean parse() {
-		if (schema.length() == 0 && args.length == 0) {
-			return true;
-		}
+	private void parse() throws ArgsException {
 		parseSchema();
 		parseArguments();
-		return unexpectedArguments.size() == 0;
 	}
 
-	private boolean parseSchema() {
+	private boolean parseSchema() throws ArgsException {
 		for (String element : schema.split(",")) {
-			parseSchemaElement(element);
+			if (element.length() > 0) {
+				String trimmedElement = element.trim();
+				parseSchemaElement(trimmedElement);
+			}
 		}
-		return false;
+		return true;
 	}
 
-	private void parseSchemaElement(String element) {
-		if (element.length() == 1) {
-			parseBooleanSchemaElement(element);
+	private void parseSchemaElement(String element) throws ArgsException {
+		char elementId = element.charAt(0);
+		String elementTail = element.substring(1);
+		validateSchemaElementId(elementId);
+		if (elementTail.length() == 0) {
+			marshalers.put(elementId, new BooleanArgumentMarshaler());
+		} else if (elementTail.equals("*")) {
+			marshalers.put(elementId, new StringArgumentMarshaler());
+		} else if (elementTail.equals("#")) {
+			marshalers.put(elementId, new IntegerArgumentMarshaler());
+		} else if (elementTail.equals("##")) {
+			marshalers.put(elementId, new DoubleArgumentMarshaler());
+		} else {
+			throw new ArgsException(ArgsException.ErrorCode.INVALID_FORMAT, elementId, elementTail);
 		}
 	}
 
-	private void parseBooleanSchemaElement(String element) {
-		char c = element.charAt(0);
-		if (Character.isLetter(c)) {
-			booleanArgs.put(c, false);
+	private void validateSchemaElementId(char elementId) throws ArgsException {
+		if (!Character.isLetter(elementId)) {
+			throw new ArgsException(ArgsException.ErrorCode.INVALID_ARGUMENT_NAME, elementId, null);
 		}
 	}
 
-	private boolean parseArguments() {
-		for (String arg : args) {
+	private boolean parseArguments() throws ArgsException {
+		for (currentArgument = argsList.iterator(); currentArgument.hasNext();) {
+			String arg = currentArgument.next();
 			parseArgument(arg);
 		}
 		return true;
 	}
 
-	private void parseArgument(String arg) {
+	private void parseArgument(String arg) throws ArgsException {
 		if (arg.startsWith("-")) {
 			parseElements(arg);
 		}
 	}
 
-	private void parseElements(String arg) {
+	private void parseElements(String arg) throws ArgsException {
 		for (int i = 1; i < arg.length(); i++) {
 			parseElement(arg.charAt(i));
 		}
 	}
 
-	private void parseElement(char argChar) {
-		if (isBoolean(argChar)) {
-			numberOfArguments++;
-			setBooleanArg(argChar, true);
+	private void parseElement(char argChar) throws ArgsException {
+		if (setArgument(argChar)) {
+			argsFound.add(argChar);
 		} else {
-			unexpectedArguments.add(argChar);
+			throw new ArgsException(ArgsException.ErrorCode.UNEXPECTED_ARGUMENT, argChar, null);
 		}
 	}
 
-	private void setBooleanArg(char argChar, boolean value) {
-		booleanArgs.put(argChar, value);
-	}
-
-	private boolean isBoolean(char argChar) {
-		return booleanArgs.containsKey(argChar);
+	private boolean setArgument(char argChar) throws ArgsException {
+		ArgumentMarshaler m = marshalers.get(argChar);
+		if (m == null) {
+			return false;
+		}
+		try {
+			m.set(currentArgument);
+			return true;
+		} catch (ArgsException e) {
+			e.setErrorArgumentId(argChar);
+			throw e;
+		}
 	}
 
 	public int cardinality() {
-		return numberOfArguments;
+		return argsFound.size();
 	}
 
 	public String usage() {
@@ -96,24 +106,45 @@ public class Args {
 		}
 	}
 
-	public String errorMessage() {
-		if (unexpectedArguments.size() > 0) {
-			return unexpectedArgumentsMessage();
-		} else {
+
+
+	public boolean getBoolean(char arg) {
+		ArgumentMarshaler am = marshalers.get(arg);
+		try {
+			return am != null && (Boolean)am.get();
+		} catch (ClassCastException e) {
+			return false;
+		}
+	}
+
+	public String getString(char arg) {
+		ArgumentMarshaler am = marshalers.get(arg);
+		try {
+			return am == null ? "" : (String)am.get();
+		} catch (ClassCastException e) {
 			return "";
 		}
 	}
 
-	private String unexpectedArgumentsMessage() {
-		StringBuffer message = new StringBuffer("Arguments -");
-		for (char c : unexpectedArguments) {
-			message.append(c);
+	public int getInt(char arg) {
+		ArgumentMarshaler am = marshalers.get(arg);
+		try {
+			return am == null ? 0 : (Integer)am.get();
+		} catch (Exception e) {
+			return 0;
 		}
-		message.append(" are unexpected.");
-		return message.toString();
 	}
 
-	public boolean getBoolean(char arg) {
-		return booleanArgs.get(arg);
+	public double getDouble(char arg) {
+		ArgumentMarshaler am = marshalers.get(arg);
+		try {
+			return am == null ? 0 : (Double) am.get();
+		} catch (Exception e) {
+			return 0.0;
+		}
+	}
+
+	public boolean has(char arg) {
+		return argsFound.contains(arg);
 	}
 }
